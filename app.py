@@ -1,6 +1,7 @@
 import streamlit as st
 import uuid
 import streamlit.components.v1 as components
+from openai_chat import chat_with_gpt4o
 
 st.set_page_config(page_title="Branchable Chat", layout="wide")
 
@@ -36,11 +37,19 @@ def render_chat(branch):
             st.session_state.current_branch = new_branch
             st.rerun()
 
-def fake_llm_response(user_input):
-    return f"This is a fake response to: '{user_input}'"
+def llm_response(user_input):
+    branch = st.session_state.current_branch
+    nodes = st.session_state.nodes
+    messages = [{"role": "system", "content": "You are a helpful assistant."}]
+    for node_id in branch[1:]:  # root는 안내문이므로 제외
+        node = nodes[node_id]
+        messages.append({"role": "user", "content": node.user_input})
+        messages.append({"role": "assistant", "content": node.response})
+    messages.append({"role": "user", "content": user_input})
+    return chat_with_gpt4o(messages)
 
 def add_message(user_input):
-    response = fake_llm_response(user_input)
+    response = llm_response(user_input)
     parent_id = st.session_state.current_branch[-1]
     new_node = ChatNode(user_input, response, parent_id)
     st.session_state.nodes[new_node.id] = new_node
