@@ -2,6 +2,8 @@ import streamlit as st
 import uuid
 import streamlit.components.v1 as components
 from openai_chat import chat_with_gpt4o
+from global_context import GlobalRAGContext
+import pyperclip
 
 st.set_page_config(page_title="Branchable Chat", layout="wide")
 
@@ -23,6 +25,9 @@ if "nodes" not in st.session_state:
     st.session_state.nodes = {root.id: root}
     st.session_state.root_id = root.id
     st.session_state.current_branch = [root.id]
+# RAG context 세션에 저장
+if "rag_context" not in st.session_state:
+    st.session_state.rag_context = GlobalRAGContext()
 
 # --- Functions ---
 def render_chat(branch):
@@ -31,30 +36,58 @@ def render_chat(branch):
         node = st.session_state.nodes[node_id]
         st.markdown(f"**You:** {node.user_input}")
         st.markdown(f"> {node.response}")
-
+        # 참고 노드 정보 표시
+        if hasattr(node, "rag_refs") and node.rag_refs:
+            st.markdown("<div style='margin-left:20px; color:#888;'>참고한 노드:</div>", unsafe_allow_html=True)
+            for ref in node.rag_refs:
+                with st.container():
+                    st.markdown(f"<div style='margin-left:30px; border:1px solid #eee; border-radius:8px; padding:6px 10px; background:#f8f8fa; font-size:13px;'>"
+                        f"<b>질문:</b> {ref['question']}<br>"
+                        f"<b>답변:</b> {ref['answer']}<br>"
+                        f"<b>노드ID:</b> <code id='nodeid_{ref['node_id']}'>{ref['node_id']}</code> "
+                        f"<button onclick=\"navigator.clipboard.writeText('{ref['node_id']}')\" style='font-size:11px; margin-left:6px;'>복사</button>"
+                        f"<br><b>시간:</b> {ref['timestamp']}"
+                        f"</div>", unsafe_allow_html=True)
         if st.button(f"🔀 Branch from here", key=f"branch_{node.id}"):
             new_branch = branch[:branch.index(node_id)+1]
             st.session_state.current_branch = new_branch
             st.rerun()
 
+# 실제 LLM 호출 함수 (RAG 참고)
 def llm_response(user_input):
     branch = st.session_state.current_branch
     nodes = st.session_state.nodes
+    rag = st.session_state.rag_context
     messages = [{"role": "system", "content": "You are a helpful assistant."}]
-    for node_id in branch[1:]:  # root는 안내문이므로 제외
+    for node_id in branch[1:]:
         node = nodes[node_id]
         messages.append({"role": "user", "content": node.user_input})
         messages.append({"role": "assistant", "content": node.response})
     messages.append({"role": "user", "content": user_input})
-    return chat_with_gpt4o(messages)
+    # RAG: 유사 노드 top-3
+    rag_refs = rag.search(user_input, top_k=3)
+    # 참고 노드 정보를 프롬프트에 추가
+    if rag_refs:
+        context_str = "\n\n".join([f"Q: {doc.question}\nA: {doc.answer}" for doc in rag_refs])
+        messages.append({"role": "system", "content": f"참고할 만한 이전 대화들:\n{context_str}"})
+    response = chat_with_gpt4o(messages)
+    return response, rag_refs
 
 def add_message(user_input):
-    response = llm_response(user_input)
+    response, rag_refs = llm_response(user_input)
     parent_id = st.session_state.current_branch[-1]
     new_node = ChatNode(user_input, response, parent_id)
     st.session_state.nodes[new_node.id] = new_node
     st.session_state.nodes[parent_id].children.append(new_node.id)
     st.session_state.current_branch.append(new_node.id)
+    # RAG 문서로 저장
+    rag = st.session_state.rag_context
+    rag.add_document(user_input, response, new_node.id)
+    # 참고 노드 정보 저장
+    new_node.rag_refs = [
+        {"question": doc.question, "answer": doc.answer, "node_id": doc.node_id, "timestamp": doc.timestamp}
+        for doc in rag_refs
+    ]
 
 def render_tree_svg_ui():
     import math
