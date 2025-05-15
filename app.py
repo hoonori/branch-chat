@@ -28,6 +28,16 @@ if "nodes" not in st.session_state:
 # RAG context 세션에 저장
 if "rag_context" not in st.session_state:
     st.session_state.rag_context = GlobalRAGContext()
+# Jump history 세션에 저장
+if "jump_history" not in st.session_state:
+    st.session_state.jump_history = []
+
+# --- Jump to Branch Helper ---
+def jump_to_branch(new_branch):
+    # 점프 전 현재 브랜치를 history에 저장 (pinned=False)
+    st.session_state.jump_history.append({"branch": list(st.session_state.current_branch), "pinned": False})
+    st.session_state.current_branch = new_branch
+    st.rerun()
 
 # --- Functions ---
 def render_chat(branch):
@@ -39,19 +49,18 @@ def render_chat(branch):
         # 참고 노드 정보 표시
         if hasattr(node, "rag_refs") and node.rag_refs:
             st.markdown("<div style='margin-left:20px; color:#888;'>참고한 노드:</div>", unsafe_allow_html=True)
-            for ref in node.rag_refs:
+            for i, ref in enumerate(node.rag_refs):
                 with st.container():
                     st.markdown(f"<div style='margin-left:30px; border:1px solid #eee; border-radius:8px; padding:6px 10px; background:#f8f8fa; font-size:13px;'>"
                         f"<b>질문:</b> {ref['question']}<br>"
                         f"<b>답변:</b> {ref['answer']}<br>"
-                        f"<b>노드ID:</b> <code id='nodeid_{ref['node_id']}'>{ref['node_id']}</code> "
-                        f"<button onclick=\"navigator.clipboard.writeText('{ref['node_id']}')\" style='font-size:11px; margin-left:6px;'>복사</button>"
-                        f"<br><b>시간:</b> {ref['timestamp']}"
-                        f"</div>", unsafe_allow_html=True)
+                        f"<b>노드ID:</b>", unsafe_allow_html=True)
+                    st.code(ref['node_id'], language=None)
+                    st.caption("위의 Copy 버튼을 눌러 클립보드에 복사하세요.")
+                    st.markdown(f"<b>시간:</b> {ref['timestamp']}", unsafe_allow_html=True)
         if st.button(f"🔀 Branch from here", key=f"branch_{node.id}"):
             new_branch = branch[:branch.index(node_id)+1]
-            st.session_state.current_branch = new_branch
-            st.rerun()
+            jump_to_branch(new_branch)
 
 # 실제 LLM 호출 함수 (RAG 참고)
 def llm_response(user_input):
@@ -94,8 +103,6 @@ def render_tree_svg_ui():
     nodes = st.session_state.nodes
     root_id = st.session_state.root_id
     current_branch = st.session_state.current_branch
-
-    # 1. 트리 레이아웃 계산 (수직, 각 레벨별로 좌우 배치)
     levels = {}
     positions = {}
     def traverse(node_id, depth=0, x=0):
@@ -120,8 +127,6 @@ def render_tree_svg_ui():
     min_y, max_y = min(all_y), max(all_y)
     width = max(600, max_x - min_x + 200)
     height = max(400, max_y - min_y + 100)
-
-    # 2. SVG + JS 생성 (클릭 시 id 클립보드 복사)
     svg = f'<svg id="tree-svg" width="{width}" height="{height}" style="background:#fafcff;">'
     for node_id, node in nodes.items():
         x1, y1 = positions[node_id]
@@ -144,31 +149,67 @@ def render_tree_svg_ui():
     function sendNodeId(node_id) {{
         navigator.clipboard.writeText(node_id);
         // alert("노드 id가 복사되었습니다! 아래 입력창에 붙여넣고 Jump를 누르세요.");
+        window.parent.postMessage({{isStreamlitMessage: true, type: "SVG_JUMP", node_id: node_id}}, "*");
     }}
     </script>
     {svg}
     '''
     components.html(html, height=height+20, scrolling=False)
-
     # 노드 id 입력창 + Jump 버튼
     st.markdown("#### 노드 id로 브랜치 점프")
     node_id_input = st.text_input("노드 id를 입력하세요(노드 클릭 후 붙여넣기)", key="node_id_input")
     if st.button("Jump to Node"):
-        if node_id_input in st.session_state.nodes:
-            branch = []
-            cur = node_id_input
+        # 점프 전 현재 브랜치를 history에 저장
+        branch = []
+        cur = node_id_input
+        nodes = st.session_state.nodes
+        if node_id_input in nodes:
             while cur:
                 branch.insert(0, cur)
-                cur = st.session_state.nodes[cur].parent_id
-            st.session_state.current_branch = branch
-            st.rerun()
+                cur = nodes[cur].parent_id
+            jump_to_branch(branch)
         else:
             st.warning("존재하지 않는 노드 id입니다.")
+
+# --- Jump History UI ---
+def render_jump_history():
+    st.subheader("⬅️ 이전 위치로 돌아가기 (Jump History)")
+    history = st.session_state.jump_history
+    if history:
+        # 고정된 엔트리 먼저, 그 다음 일반 엔트리
+        pinned = [h for h in history if h["pinned"]]
+        normal = [h for h in history if not h["pinned"]]
+        show_list = pinned + normal
+        for idx, entry in enumerate(show_list):
+            branch = entry["branch"]
+            last_node_id = branch[-1]
+            node = st.session_state.nodes[last_node_id]
+            label = f"{node.user_input[:20]} | {node.response[:20]}"
+            cols = st.columns([6,1,1])
+            with cols[0]:
+                if st.button(f"이 위치로 돌아가기: {label}", key=f"jump_back_{idx}"):
+                    st.session_state.current_branch = entry["branch"]
+                    # 점프 후, 고정이 아니면 pop
+                    if not entry["pinned"]:
+                        st.session_state.jump_history.pop(history.index(entry))
+                    st.rerun()
+            with cols[1]:
+                pin_label = "고정해제" if entry["pinned"] else "고정"
+                if st.button(pin_label, key=f"pin_{idx}"):
+                    entry["pinned"] = not entry["pinned"]
+                    st.rerun()
+            with cols[2]:
+                if st.button("삭제", key=f"del_{idx}"):
+                    st.session_state.jump_history.pop(history.index(entry))
+                    st.rerun()
+    else:
+        st.caption("점프 이력이 없습니다.")
 
 # --- Layout ---
 col1, col2 = st.columns([2, 1])
 
 with col1:
+    render_jump_history()
     render_chat(st.session_state.current_branch)
     user_input = st.text_input("Your message:", key="user_input")
     if st.button("Send") and user_input:
@@ -176,16 +217,6 @@ with col1:
         st.rerun()
 
 with col2:
-    st.subheader("🧠 Global Context (simulated)")
-    for i, ctx in enumerate(global_context):
-        st.markdown(f"**{i+1}.** {ctx}")
-
-    if st.button("➕ Add current input to Global Context"):
-        last_node = st.session_state.nodes[st.session_state.current_branch[-1]]
-        global_context.append(last_node.user_input + " / " + last_node.response)
-        st.rerun()
-
-    st.divider()
     st.subheader("🌳 Conversation Tree View (SVG)")
     render_tree_svg_ui()
 
