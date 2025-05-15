@@ -46,26 +46,40 @@ def add_message(user_input):
     st.session_state.nodes[parent_id].children.append(new_node.id)
     st.session_state.current_branch.append(new_node.id)
 
-def render_branch_selector():
-    st.subheader("🌳 Conversation Tree")
-    branch_paths = []
+def render_tree_ui(current_id, depth=0):
+    node = st.session_state.nodes[current_id]
+    is_current = current_id in st.session_state.current_branch
+    box_color = "#e0f7fa" if is_current else "#f0f0f0"
+    indent = depth * 30
 
-    def dfs(path):
-        current = path[-1]
-        node = st.session_state.nodes[current]
-        if not node.children:
-            branch_paths.append(path)
-        else:
-            for child_id in node.children:
-                dfs(path + [child_id])
+    st.markdown(
+        f"""
+        <div style='margin-left:{indent}px; padding:10px; border-radius: 10px; background-color:{box_color}; border: 1px solid #ccc;'>
+            <b>User:</b> {node.user_input}<br>
+            <b>Bot:</b> {node.response}<br>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    dfs([st.session_state.root_id])
+    # Streamlit 버튼으로 대체 및 디버깅 로그 추가
+    if st.button(f"Jump & Branch Here (debug)", key=f"jump_{node.id}"):
+        st.write(f"[DEBUG] Jump & Branch Here clicked for node_id: {node.id}")
+        # 브랜치 경로 계산
+        branch = []
+        cur = node.id
+        while cur:
+            branch.insert(0, cur)
+            cur = st.session_state.nodes[cur].parent_id
+        st.session_state.current_branch = branch
+        st.write(f"[DEBUG] New branch: {branch}")
+        st.write(f"[DEBUG] Session state keys: {list(st.session_state.keys())}")
+        st.write(f"[DEBUG] Nodes: {list(st.session_state.nodes.keys())}")
+        st.write(f"[DEBUG] Current branch: {st.session_state.current_branch}")
+        st.rerun()
 
-    for idx, path in enumerate(branch_paths):
-        label = " → ".join([st.session_state.nodes[nid].user_input[:15] for nid in path])
-        if st.button(f"🔁 Switch to branch #{idx+1}: {label}", key=f"switch_{idx}"):
-            st.session_state.current_branch = path
-            st.rerun()
+    for child_id in node.children:
+        render_tree_ui(child_id, depth + 1)
 
 # --- Layout ---
 col1, col2 = st.columns([2, 1])
@@ -88,6 +102,7 @@ with col2:
         st.rerun()
 
     st.divider()
-    render_branch_selector()
+    st.subheader("🌳 Conversation Tree View")
+    render_tree_ui(st.session_state.root_id)
 
 st.caption("🔧 This is a prototype. LLM integration and mem0 RAG planned later.")
