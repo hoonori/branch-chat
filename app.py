@@ -1,5 +1,6 @@
 import streamlit as st
 import uuid
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Branchable Chat", layout="wide")
 
@@ -46,40 +47,81 @@ def add_message(user_input):
     st.session_state.nodes[parent_id].children.append(new_node.id)
     st.session_state.current_branch.append(new_node.id)
 
-def render_tree_ui(current_id, depth=0):
-    node = st.session_state.nodes[current_id]
-    is_current = current_id in st.session_state.current_branch
-    box_color = "#e0f7fa" if is_current else "#f0f0f0"
-    indent = depth * 30
+def render_tree_svg_ui():
+    import math
+    nodes = st.session_state.nodes
+    root_id = st.session_state.root_id
+    current_branch = st.session_state.current_branch
 
-    st.markdown(
-        f"""
-        <div style='margin-left:{indent}px; padding:10px; border-radius: 10px; background-color:{box_color}; border: 1px solid #ccc;'>
-            <b>User:</b> {node.user_input}<br>
-            <b>Bot:</b> {node.response}<br>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    # 1. 트리 레이아웃 계산 (수직, 각 레벨별로 좌우 배치)
+    levels = {}
+    positions = {}
+    def traverse(node_id, depth=0, x=0):
+        if depth not in levels:
+            levels[depth] = []
+        levels[depth].append(node_id)
+        y = depth * 120 + 60
+        positions[node_id] = [x, y]
+        child_x = x
+        for child_id in nodes[node_id].children:
+            child_x = traverse(child_id, depth+1, child_x)
+            child_x += 180
+        if nodes[node_id].children:
+            first = positions[nodes[node_id].children[0]][0]
+            last = positions[nodes[node_id].children[-1]][0]
+            positions[node_id][0] = (first + last) // 2
+        return positions[node_id][0]
+    traverse(root_id)
+    all_x = [pos[0] for pos in positions.values()]
+    all_y = [pos[1] for pos in positions.values()]
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+    width = max(600, max_x - min_x + 200)
+    height = max(400, max_y - min_y + 100)
 
-    # Streamlit 버튼으로 대체 및 디버깅 로그 추가
-    if st.button(f"Jump & Branch Here (debug)", key=f"jump_{node.id}"):
-        st.write(f"[DEBUG] Jump & Branch Here clicked for node_id: {node.id}")
-        # 브랜치 경로 계산
-        branch = []
-        cur = node.id
-        while cur:
-            branch.insert(0, cur)
-            cur = st.session_state.nodes[cur].parent_id
-        st.session_state.current_branch = branch
-        st.write(f"[DEBUG] New branch: {branch}")
-        st.write(f"[DEBUG] Session state keys: {list(st.session_state.keys())}")
-        st.write(f"[DEBUG] Nodes: {list(st.session_state.nodes.keys())}")
-        st.write(f"[DEBUG] Current branch: {st.session_state.current_branch}")
-        st.rerun()
+    # 2. SVG + JS 생성 (클릭 시 id 클립보드 복사)
+    svg = f'<svg id="tree-svg" width="{width}" height="{height}" style="background:#fafcff;">'
+    for node_id, node in nodes.items():
+        x1, y1 = positions[node_id]
+        for child_id in node.children:
+            x2, y2 = positions[child_id]
+            svg += f'<line x1="{x1+80}" y1="{y1+40}" x2="{x2+80}" y2="{y2}" stroke="#bbb" stroke-width="2" />'
+    for node_id, node in nodes.items():
+        x, y = positions[node_id]
+        is_current = node_id in current_branch
+        color = "#e0f7fa" if is_current else "#fff"
+        border = "#0097a7" if is_current else "#bbb"
+        svg += f'<g>'
+        svg += f'<rect x="{x+40}" y="{y}" width="80" height="60" rx="12" fill="{color}" stroke="{border}" stroke-width="3" style="cursor:pointer;" onclick="sendNodeId(\'{node_id}\')" />'
+        svg += f'<text x="{x+80}" y="{y+25}" text-anchor="middle" font-size="13" fill="#333" pointer-events="none">{node.user_input[:10]}</text>'
+        svg += f'<text x="{x+80}" y="{y+45}" text-anchor="middle" font-size="11" fill="#888" pointer-events="none">{node.response[:10]}</text>'
+        svg += f'</g>'
+    svg += '</svg>'
+    html = f'''
+    <script>
+    function sendNodeId(node_id) {{
+        navigator.clipboard.writeText(node_id);
+        // alert("노드 id가 복사되었습니다! 아래 입력창에 붙여넣고 Jump를 누르세요.");
+    }}
+    </script>
+    {svg}
+    '''
+    components.html(html, height=height+20, scrolling=False)
 
-    for child_id in node.children:
-        render_tree_ui(child_id, depth + 1)
+    # 노드 id 입력창 + Jump 버튼
+    st.markdown("#### 노드 id로 브랜치 점프")
+    node_id_input = st.text_input("노드 id를 입력하세요(노드 클릭 후 붙여넣기)", key="node_id_input")
+    if st.button("Jump to Node"):
+        if node_id_input in st.session_state.nodes:
+            branch = []
+            cur = node_id_input
+            while cur:
+                branch.insert(0, cur)
+                cur = st.session_state.nodes[cur].parent_id
+            st.session_state.current_branch = branch
+            st.rerun()
+        else:
+            st.warning("존재하지 않는 노드 id입니다.")
 
 # --- Layout ---
 col1, col2 = st.columns([2, 1])
@@ -102,7 +144,7 @@ with col2:
         st.rerun()
 
     st.divider()
-    st.subheader("🌳 Conversation Tree View")
-    render_tree_ui(st.session_state.root_id)
+    st.subheader("🌳 Conversation Tree View (SVG)")
+    render_tree_svg_ui()
 
 st.caption("🔧 This is a prototype. LLM integration and mem0 RAG planned later.")
